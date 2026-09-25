@@ -1,0 +1,23 @@
+# Virtual environment
+env/
+venv/
+.venv/
+
+# Environment variables / secrets
+.env
+
+# FAISS local database
+faiss_index/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Uploaded PDF files
+*.pdf
+
+# Temporary files
+*.tmp
+
+# Streamlit
+.streamlit/secrets.toml
