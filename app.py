@@ -4,9 +4,9 @@ from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_classic.chains.question_answering import load_qa_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
@@ -19,7 +19,7 @@ if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
 
 FAISS_INDEX_DIR = "faiss_index"
 EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
-CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 
 
 def get_pdf_text(pdf_paths: list[str]) -> str:
@@ -43,21 +43,22 @@ def get_vector_store(text_chunks: list[str]) -> None:
 
 
 def get_conversational_chain():
-    prompt_template = """
-    Answer the question as detailed as possible from the provided context.
-    If the answer is not in the context, say "answer is not available in the context".
+    prompt = ChatPromptTemplate.from_template(
+        """
+        Answer the question as detailed as possible from the provided context.
+        If the answer is not in the context, say "answer is not available in the context".
 
-    Context:
-    {context}
+        Context:
+        {context}
 
-    Question:
-    {question}
+        Question:
+        {question}
 
-    Answer:
-    """
+        Answer:
+        """
+    )
     model = ChatGoogleGenerativeAI(model=CHAT_MODEL, temperature=0.3)
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
+    return create_stuff_documents_chain(llm=model, prompt=prompt)
 
 
 def chat_with_pdf(question: str) -> str:
@@ -72,10 +73,8 @@ def chat_with_pdf(question: str) -> str:
     )
     docs = db.similarity_search(question)
     chain = get_conversational_chain()
-    result = chain.invoke({"input_documents": docs, "question": question})
-    if isinstance(result, dict):
-        return result.get("output_text", str(result))
-    return str(result)
+    answer = chain.invoke({"context": docs, "question": question})
+    return str(answer)
 
 
 st.set_page_config(page_title="Multi-PDF RAG Chatbot", layout="wide")
