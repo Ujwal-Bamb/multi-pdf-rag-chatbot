@@ -11,6 +11,23 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
 
+try:
+    from langchain_google_genai.chat_models import GoogleAPIError, ServerError
+except ImportError:
+    try:
+        from google.api_core.exceptions import GoogleAPIError, ServerError
+    except ImportError:
+        GoogleAPIError = Exception
+        ServerError = Exception
+
+API_ERRORS = (GoogleAPIError, ServerError)
+try:
+    from google.api_core.exceptions import GoogleAPIError as CoreGoogleAPIError
+    if CoreGoogleAPIError not in API_ERRORS:
+        API_ERRORS = API_ERRORS + (CoreGoogleAPIError,)
+except ImportError:
+    pass
+
 load_dotenv()
 
 # Support local .env or Streamlit Community Cloud Secrets
@@ -20,6 +37,7 @@ if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
 FAISS_INDEX_DIR = "faiss_index"
 EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
+FALLBACK_CHAT_MODEL = os.getenv("GEMINI_FALLBACK_CHAT_MODEL", "gemini-3.5-flash-lite")
 
 
 def get_pdf_text(pdf_paths: list[str]) -> str:
@@ -42,7 +60,7 @@ def get_vector_store(text_chunks: list[str]) -> None:
     vector_store.save_local(FAISS_INDEX_DIR)
 
 
-def get_conversational_chain():
+def get_conversational_chain(model=None):
     prompt_template = """
     Answer the question as detailed as possible from the provided context.
     If the answer is not in the context, say "answer is not available in the context".
@@ -55,7 +73,8 @@ def get_conversational_chain():
 
     Answer:
     """
-    model = ChatGoogleGenerativeAI(model=CHAT_MODEL, temperature=0.3)
+    if model is None:
+        model = ChatGoogleGenerativeAI(model=CHAT_MODEL, temperature=0.3)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     return load_qa_chain(model, chain_type="stuff", prompt=prompt)
 
@@ -72,7 +91,26 @@ def chat_with_pdf(question: str) -> str:
     )
     docs = db.similarity_search(question)
     chain = get_conversational_chain()
-    result = chain.invoke({"input_documents": docs, "question": question})
+    try:
+        result = chain.invoke({"input_documents": docs, "question": question})
+    except API_ERRORS:
+        try:
+            fallback_model = ChatGoogleGenerativeAI(model=FALLBACK_CHAT_MODEL, temperature=0.3)
+            fallback_chain = get_conversational_chain(model=fallback_model)
+            result = fallback_chain.invoke({"input_documents": docs, "question": question})
+        except Exception:
+            return "Gemini is temporarily experiencing a server error (500/503). Please try again in a moment."
+    except Exception as exc:
+        if any(err_code in str(exc) for err_code in ("500", "503", "ServerError", "overloaded", "ResourceExhausted")):
+            try:
+                fallback_model = ChatGoogleGenerativeAI(model=FALLBACK_CHAT_MODEL, temperature=0.3)
+                fallback_chain = get_conversational_chain(model=fallback_model)
+                result = fallback_chain.invoke({"input_documents": docs, "question": question})
+            except Exception:
+                return "Gemini is temporarily experiencing a server error (500/503). Please try again in a moment."
+        else:
+            raise
+
     if isinstance(result, dict):
         return result.get("output_text", str(result))
     return str(result)
